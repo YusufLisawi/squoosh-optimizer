@@ -2,10 +2,13 @@
 
 Shrinks images. Two things live here:
 
-1. **`POST /optimize`** — generic, no auth. Send any image, get a smaller one
-   back. Usable from any project.
+1. **`POST /optimize`** — generic. Send any image, get a smaller one back.
+   Usable from any project — just needs an API key.
 2. **`/tinytales/*`** — specific to TinyTales' story catalog. Batch-converts
-   every page image to WebP, uploads to R2, updates Convex. Requires an API key.
+   every page image to WebP, uploads to R2, updates Convex.
+
+Both require the same `x-api-key` header — this isn't an open public host,
+just a shared internal tool two things happen to use.
 
 Named after Squoosh, but doesn't use its code — Squoosh's Node library
 (`@squoosh/lib`) was deleted from the upstream repo in Jan 2023 and marked
@@ -17,8 +20,10 @@ which is actively maintained.
 ## Quick use — generic endpoint
 
 ```bash
-curl https://squoosh.brainfast.ai/optimize?format=webp \
-  --data-binary @photo.jpg -H "Content-Type: image/jpeg" \
+curl "https://squoosh.brainfast.ai/optimize?format=webp" \
+  -H "x-api-key: $TRIGGER_SECRET" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @photo.jpg \
   -o photo.webp
 ```
 
@@ -74,6 +79,6 @@ trigger to speak of — it just answers requests as they come in.
 | `R2_SECRET_ACCESS_KEY` | tinytales apply only | |
 | `R2_BUCKET_NAME` | tinytales apply only | |
 | `R2_ENDPOINT` | tinytales apply only | |
-| `TRIGGER_SECRET` | HTTP server | required for every `/tinytales/*` route; `/optimize` doesn't use it |
+| `TRIGGER_SECRET` | HTTP server | required for every route except `/health` and `/docs` |
 | `WEBP_QUALITY` | optional | default 80, CLI only |
 | `PORT` | optional | default 3000 |

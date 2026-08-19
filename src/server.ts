@@ -22,9 +22,10 @@ app.get('/docs', (_req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// GENERIC: shrink one image, get it back. No account, no auth, no history —
-// upload comes in, converted image goes out, nothing is kept. Usable by any
-// project, not just TinyTales.
+// GENERIC: shrink one image, get it back. No history, nothing kept — but it
+// still requires the same key as everything else below, so this server
+// doesn't become an open image-conversion host for anyone who finds the URL.
+// Usable by any project, not just TinyTales — just needs the key.
 // ─────────────────────────────────────────────────────────────────────────
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -32,6 +33,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX
 
 app.post(
   '/optimize',
+  requireApiKey,
   express.raw({ type: 'image/*', limit: MAX_UPLOAD_BYTES }),
   upload.single('image'),
   async (req, res) => {
@@ -70,8 +72,8 @@ app.post(
 
 // ─────────────────────────────────────────────────────────────────────────
 // TINYTALES: batch-converts the story catalog's page images, uploads to R2,
-// updates Convex. Everything below here is specific to that one project and
-// needs the shared secret — the generic endpoint above deliberately does not.
+// updates Convex. Same key as /optimize above, but everything here is
+// specific to that one project's data.
 // ─────────────────────────────────────────────────────────────────────────
 
 type Job = {

@@ -18,19 +18,23 @@ export const docsHtml = `<!doctype html>
   th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid rgba(128,128,128,.2); font-size: 0.94em; }
   .warn { border-left: 3px solid #e0a800; background: rgba(224,168,0,.08); padding: 10px 14px; border-radius: 4px; margin: 14px 0; }
   .section { border: 1px solid rgba(128,128,128,.25); border-radius: 10px; padding: 4px 20px 20px; margin-top: 28px; }
-  .tag { display: inline-block; font-size: 0.72em; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; padding: 2px 9px; border-radius: 999px; margin-left: 8px; vertical-align: middle; }
-  .tag.open { background: rgba(40,167,69,.15); color: #2ea043; }
-  .tag.auth { background: rgba(224,168,0,.15); color: #cc9200; }
 </style>
 </head>
 <body>
 
 <h1>squoosh-optimizer</h1>
-<p class="lead">Shrinks images. Two things live here: a generic "give me an image, get a smaller one back" API anyone can use, and a batch pipeline specific to TinyTales' story catalog.</p>
+<p class="lead">Shrinks images. Two things live here: a generic "give me an image, get a smaller one back" API, and a batch pipeline specific to TinyTales' story catalog. Both need the same key.</p>
+
+<h2>Authentication</h2>
+<p>Every endpoint except <code class="inline">/health</code> and this page requires an API key in the <code class="inline">x-api-key</code> header.</p>
+<pre>x-api-key: &lt;your key&gt;</pre>
+<div class="warn">
+  <strong>Keep the key secret.</strong> It's stored as <code class="inline">TRIGGER_SECRET</code> in this app's Coolify environment variables — never in git, never in client-side code, never pasted into a public form or chat. A wrong or missing key gets <code class="inline">401 Unauthorized</code>. If it ever leaks, rotate it in Coolify and every caller needs the new value.
+</div>
 
 <div class="section">
-<h2>Generic image optimization <span class="tag open">no auth</span></h2>
-<p>Send an image, get a smaller one back. Stateless — nothing is stored, nothing is logged beyond a normal access log. Use it from anything: curl, a browser form, another app.</p>
+<h2>Generic image optimization</h2>
+<p>Send an image, get a smaller one back. Stateless — nothing is stored, nothing is logged beyond a normal access log. Usable from any project, curl, or server-side code — just needs the key, so this doesn't double as an open image-conversion host for anyone who finds the URL.</p>
 
 <h3>POST /optimize</h3>
 <table>
@@ -40,41 +44,41 @@ export const docsHtml = `<!doctype html>
 </table>
 <p>Send the image either way:</p>
 <ul>
-  <li><code class="inline">multipart/form-data</code> with a field named <code class="inline">image</code> — what an HTML <code class="inline">&lt;form&gt;</code> or most HTTP clients send by default.</li>
+  <li><code class="inline">multipart/form-data</code> with a field named <code class="inline">image</code>.</li>
   <li>Raw bytes as the request body with an <code class="inline">image/*</code> Content-Type.</li>
 </ul>
 <p>The response <strong>is</strong> the converted image — <code class="inline">Content-Disposition: attachment</code> so it downloads directly, plus <code class="inline">X-Bytes-Before</code> / <code class="inline">X-Bytes-After</code> headers if you want the size delta without decoding the file.</p>
 
 <p><strong>curl, raw body:</strong></p>
-<pre>curl https://squoosh.brainfast.ai/optimize?format=webp\\&quality=80 \\
-  --data-binary @photo.jpg \\
+<pre>curl "https://squoosh.brainfast.ai/optimize?format=webp\\&quality=80" \\
+  -H "x-api-key: $TRIGGER_SECRET" \\
   -H "Content-Type: image/jpeg" \\
+  --data-binary @photo.jpg \\
   -o photo.webp</pre>
 
 <p><strong>curl, multipart (form-upload style):</strong></p>
-<pre>curl https://squoosh.brainfast.ai/optimize?format=avif \\
+<pre>curl "https://squoosh.brainfast.ai/optimize?format=avif" \\
+  -H "x-api-key: $TRIGGER_SECRET" \\
   -F "image=@photo.jpg" \\
   -o photo.avif</pre>
 
-<p><strong>HTML form:</strong></p>
-<pre>&lt;form method="post" action="https://squoosh.brainfast.ai/optimize?format=webp" enctype="multipart/form-data"&gt;
-  &lt;input type="file" name="image" accept="image/*" /&gt;
-  &lt;button&gt;Optimize&lt;/button&gt;
-&lt;/form&gt;</pre>
+<p><strong>From a browser or server — key needs a header, so a plain <code class="inline">&lt;form&gt;</code> can't send it. Use fetch:</strong></p>
+<pre>const form = new FormData();
+form.append("image", fileInput.files[0]);
 
-<p>Max upload size: <strong>25 MB</strong>. Bad/corrupt image → <code class="inline">422</code>. Unsupported <code class="inline">format</code> → <code class="inline">400</code>.</p>
-<div class="warn">Open by design, so there's no per-caller quota — it's rate-limited only by server capacity. If it's ever abused, the fix is adding auth here, not something callers need to plan around today.</div>
+const res = await fetch("https://squoosh.brainfast.ai/optimize?format=webp", {
+  method: "POST",
+  headers: { "x-api-key": API_KEY },
+  body: form,
+});
+const blob = await res.blob(); // the optimized image</pre>
+
+<p>Max upload size: <strong>25 MB</strong>. Bad/corrupt image → <code class="inline">422</code>. Unsupported <code class="inline">format</code> → <code class="inline">400</code>. Missing/wrong key → <code class="inline">401</code>.</p>
 </div>
 
 <div class="section">
-<h2>TinyTales story catalog <span class="tag auth">requires x-api-key</span></h2>
-<p>Batch-converts every page image in the TinyTales story catalog, uploads the result to R2, and updates the matching Convex record. Specific to that one project's data — everything below needs the shared secret.</p>
-
-<h3>Authentication</h3>
-<pre>x-api-key: &lt;your key&gt;</pre>
-<div class="warn">
-  <strong>Keep the key secret.</strong> It's stored as <code class="inline">TRIGGER_SECRET</code> in this app's Coolify environment variables — never in git, never in client-side code. A wrong or missing key gets <code class="inline">401 Unauthorized</code>. If it ever leaks, rotate it in Coolify and every caller needs the new value.
-</div>
+<h2>TinyTales story catalog</h2>
+<p>Batch-converts every page image in the TinyTales story catalog, uploads the result to R2, and updates the matching Convex record. Specific to that one project's data.</p>
 
 <table>
   <tr><th>Method &amp; path</th><th>What it does</th></tr>
