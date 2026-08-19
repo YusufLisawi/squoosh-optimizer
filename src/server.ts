@@ -1,10 +1,11 @@
 import express from 'express';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { env } from './env.js';
 import { runOptimize, type OptimizeSummary } from './optimize.js';
+import { docsHtml } from './docs.js';
 
 if (!env.TRIGGER_SECRET) {
-  throw new Error('TRIGGER_SECRET must be set to run the HTTP server (protects POST /run).');
+  throw new Error('TRIGGER_SECRET must be set to run the HTTP server (protects the API).');
 }
 
 type Job = {
@@ -21,19 +22,47 @@ const jobs = new Map<string, Job>();
 const app = express();
 app.use(express.json());
 
+/**
+ * Constant-time comparison, not `===`. A plain string comparison exits at
+ * the first mismatched byte, so its timing leaks how many leading characters
+ * of a guess were correct — over enough requests that's enough to brute-force
+ * the key. `timingSafeEqual` always takes the same time regardless of where
+ * the difference is, so no measurement of it can help.
+ */
+function isValidApiKey(provided: string | undefined): boolean {
+  if (!provided) return false;
+  const expected = Buffer.from(env.TRIGGER_SECRET!);
+  const actual = Buffer.from(provided);
+  // Buffers of different lengths can't go through timingSafeEqual, but their
+  // *length* isn't sensitive the way byte-by-byte content is, so a fixed-cost
+  // early return here doesn't reopen the timing side-channel above.
+  if (actual.length !== expected.length) return false;
+  return timingSafeEqual(actual, expected);
+}
+
+function requireApiKey(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) {
+  if (!isValidApiKey(req.header('x-api-key'))) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  next();
+}
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
+});
+
+app.get('/docs', (_req, res) => {
+  res.type('html').send(docsHtml);
 });
 
 // Runs are triggered manually, not on a schedule — the story catalog changes
 // rarely and touching every page's live image is worth a deliberate action,
 // not a cron job nobody is watching.
-app.post('/run', (req, res) => {
-  const key = req.header('x-api-key');
-  if (key !== env.TRIGGER_SECRET) {
-    return res.status(401).json({ error: 'unauthorized' });
-  }
-
+app.post('/run', requireApiKey, (req, res) => {
   const dryRun = req.body?.dryRun !== false; // defaults to true — real writes are opt-in
   const storyId = typeof req.body?.storyId === 'string' ? req.body.storyId : undefined;
   const limit = typeof req.body?.limit === 'number' ? req.body.limit : undefined;
@@ -60,7 +89,9 @@ app.post('/run', (req, res) => {
   res.status(202).json({ jobId: id, dryRun, storyId, limit });
 });
 
-app.get('/status/:id', (req, res) => {
+// Job results include story ids and byte counts — not secret, but not public
+// either, so this needs the same key as /run rather than being left open.
+app.get('/status/:id', requireApiKey, (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) {
     return res.status(404).json({ error: 'unknown job id' });
@@ -68,7 +99,7 @@ app.get('/status/:id', (req, res) => {
   res.json(job);
 });
 
-app.get('/status', (_req, res) => {
+app.get('/status', requireApiKey, (_req, res) => {
   const all = [...jobs.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   res.json(all.slice(0, 20));
 });

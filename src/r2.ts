@@ -24,11 +24,20 @@ export function webpKeyFor(originalKey: string): string {
 }
 
 export async function downloadOriginal(url: string): Promise<Buffer> {
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Download failed (${res.status}): ${url}`);
+  // Without a timeout, one stalled connection hangs the entire sequential
+  // batch forever with no visible error — this turns that into a normal
+  // per-page failure that the run can report and move past.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) {
+      throw new Error(`Download failed (${res.status}): ${url}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  } finally {
+    clearTimeout(timeout);
   }
-  return Buffer.from(await res.arrayBuffer());
 }
 
 export async function uploadWebp(key: string, bytes: Buffer): Promise<string> {

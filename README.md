@@ -36,19 +36,11 @@ placeholder R2 write credentials.
 ## Deployed service
 
 Runs as an HTTP service (`src/server.ts`) on Coolify at
-`squoosh.brainfast.ai`, triggered manually:
+`squoosh.brainfast.ai`, triggered manually — no cron, the catalog changes
+rarely and this touches every story's live images, so it's a deliberate
+action, not a schedule.
 
-```bash
-curl -X POST https://squoosh.brainfast.ai/run \
-  -H "x-api-key: $TRIGGER_SECRET" \
-  -H "content-type: application/json" \
-  -d '{"dryRun": false, "storyId": "..."}'
-
-curl https://squoosh.brainfast.ai/status/<jobId>
-```
-
-No cron — the catalog changes rarely and this touches every story's live
-images, so it's a deliberate action, not a schedule.
+**Full API reference, auth, and examples: https://squoosh.brainfast.ai/docs**
 
 ## Env vars
 
