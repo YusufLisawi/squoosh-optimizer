@@ -1,12 +1,78 @@
 import express from 'express';
+import multer from 'multer';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { env } from './env.js';
 import { runOptimize, type OptimizeSummary } from './optimize.js';
+import { convertImage, isSupportedFormat, SUPPORTED_FORMATS, type OutputFormat } from './generic.js';
 import { docsHtml } from './docs.js';
 
 if (!env.TRIGGER_SECRET) {
-  throw new Error('TRIGGER_SECRET must be set to run the HTTP server (protects the API).');
+  throw new Error('TRIGGER_SECRET must be set to run the HTTP server (protects the TinyTales API).');
 }
+
+const app = express();
+app.use(express.json());
+
+app.get('/health', (_req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/docs', (_req, res) => {
+  res.type('html').send(docsHtml);
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// GENERIC: shrink one image, get it back. No account, no auth, no history —
+// upload comes in, converted image goes out, nothing is kept. Usable by any
+// project, not just TinyTales.
+// ─────────────────────────────────────────────────────────────────────────
+
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES } });
+
+app.post(
+  '/optimize',
+  express.raw({ type: 'image/*', limit: MAX_UPLOAD_BYTES }),
+  upload.single('image'),
+  async (req, res) => {
+    const image = req.file?.buffer ?? (Buffer.isBuffer(req.body) ? req.body : undefined);
+    if (!image || image.byteLength === 0) {
+      return res.status(400).json({
+        error: 'No image provided. Send it as multipart/form-data (field "image") or as the raw request body with an image/* Content-Type.',
+      });
+    }
+
+    const formatParam = String(req.query.format ?? 'webp');
+    if (!isSupportedFormat(formatParam)) {
+      return res.status(400).json({
+        error: `Unsupported format "${formatParam}". Use one of: ${SUPPORTED_FORMATS.join(', ')}`,
+      });
+    }
+    const format: OutputFormat = formatParam;
+
+    const quality = Math.min(100, Math.max(1, Number(req.query.quality ?? 80) || 80));
+
+    try {
+      const result = await convertImage(image, format, quality);
+      res.set('Content-Type', result.contentType);
+      res.set('Content-Disposition', `attachment; filename="optimized.${format}"`);
+      res.set('X-Bytes-Before', String(result.bytesBefore));
+      res.set('X-Bytes-After', String(result.bytesAfter));
+      res.send(result.bytes);
+    } catch (error) {
+      res.status(422).json({
+        error: 'Could not decode that as an image.',
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────
+// TINYTALES: batch-converts the story catalog's page images, uploads to R2,
+// updates Convex. Everything below here is specific to that one project and
+// needs the shared secret — the generic endpoint above deliberately does not.
+// ─────────────────────────────────────────────────────────────────────────
 
 type Job = {
   id: string;
@@ -18,9 +84,6 @@ type Job = {
 };
 
 const jobs = new Map<string, Job>();
-
-const app = express();
-app.use(express.json());
 
 /**
  * Constant-time comparison, not `===`. A plain string comparison exits at
@@ -51,18 +114,12 @@ function requireApiKey(
   next();
 }
 
-app.get('/health', (_req, res) => {
-  res.json({ ok: true });
-});
-
-app.get('/docs', (_req, res) => {
-  res.type('html').send(docsHtml);
-});
+const tinytales = express.Router();
 
 // Runs are triggered manually, not on a schedule — the story catalog changes
 // rarely and touching every page's live image is worth a deliberate action,
 // not a cron job nobody is watching.
-app.post('/run', requireApiKey, (req, res) => {
+tinytales.post('/run', requireApiKey, (req, res) => {
   const dryRun = req.body?.dryRun !== false; // defaults to true — real writes are opt-in
   const storyId = typeof req.body?.storyId === 'string' ? req.body.storyId : undefined;
   const limit = typeof req.body?.limit === 'number' ? req.body.limit : undefined;
@@ -72,8 +129,8 @@ app.post('/run', requireApiKey, (req, res) => {
   jobs.set(id, job);
 
   // Fire-and-forget: the full catalog can take longer than a reverse proxy's
-  // request timeout, so the client polls GET /status/:id instead of waiting
-  // on this response.
+  // request timeout, so the client polls GET /tinytales/status/:id instead of
+  // waiting on this response.
   runOptimize({ dryRun, storyId, limit })
     .then((summary) => {
       job.status = 'done';
@@ -91,7 +148,7 @@ app.post('/run', requireApiKey, (req, res) => {
 
 // Job results include story ids and byte counts — not secret, but not public
 // either, so this needs the same key as /run rather than being left open.
-app.get('/status/:id', requireApiKey, (req, res) => {
+tinytales.get('/status/:id', requireApiKey, (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) {
     return res.status(404).json({ error: 'unknown job id' });
@@ -99,10 +156,12 @@ app.get('/status/:id', requireApiKey, (req, res) => {
   res.json(job);
 });
 
-app.get('/status', requireApiKey, (_req, res) => {
+tinytales.get('/status', requireApiKey, (_req, res) => {
   const all = [...jobs.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   res.json(all.slice(0, 20));
 });
+
+app.use('/tinytales', tinytales);
 
 app.listen(env.PORT, () => {
   console.log(`squoosh-optimizer listening on :${env.PORT}`);
